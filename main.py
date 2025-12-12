@@ -3,18 +3,24 @@ import logging
 import uuid
 import sqlite_utils
 
+# Импорт executor работает корректно с aiogram==2.25.1
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# --- КОНФИГУРАЦИЯ БОТА ---
-# ВНИМАНИЕ: Эти данные видны на GitHub.
+# --- КОНФИГУРАЦИЯ БОТА (ЖЕСТКО ПРОПИСАННЫЕ ДАННЫЕ) ---
+# Токен (8597302676:AAH6sOqnLONNdboRPwfYhmzk_fkL4sFRDo0)
 API_TOKEN = '8597302676:AAH6sOqnLONNdboRPwfYhmzk_fkL4sFRDo0' 
+
+# Ваш Telegram ID (7227557185)
 YOUR_TELEGRAM_ID = 7227557185 
+
+# Имя вашего бота для генерации ссылки
 BOT_USERNAME = 'MTGASKBot' 
 # -------------------------
 
+# Проверка, что критические данные присутствуют
 if not API_TOKEN or YOUR_TELEGRAM_ID is None:
     logging.error("❌ Критическая ошибка: Отсутствует BOT_TOKEN или YOUR_ID.")
     exit(1)
@@ -23,10 +29,12 @@ if not API_TOKEN or YOUR_TELEGRAM_ID is None:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+# MemoryStorage подходит для Bot-Host
+dp = Dispatcher(bot, storage=MemoryStorage()) 
 DB_NAME = 'anon_bot.db'
 db = sqlite_utils.Database(DB_NAME)
 
+# Инициализация таблицы для пользователей и их токенов
 if 'users' not in db.table_names():
     db["users"].create(
         {"id": int, "link_token": str},
@@ -34,7 +42,7 @@ if 'users' not in db.table_names():
         if_not_exists=True
     )
 
-# --- FSM для отслеживания состояния отправки ---
+# --- FSM (Конечный автомат) для отслеживания состояния отправки ---
 class AnonMessage(StatesGroup):
     recipient_id = State() 
     waiting_for_message = State()
@@ -61,8 +69,8 @@ def get_user_id_by_token(token: str) -> int or None:
 @dp.message_handler(commands=['start'])
 async def handle_start(message: types.Message, state: FSMContext):
     """
-    Обрабатывает /start. Если есть токен в аргументах, переводит в режим отправки. 
-    Иначе - выдает персональную ссылку.
+    Обрабатывает /start. Если есть токен в аргументах, переводит в режим отправки, 
+    иначе - выдает персональную ссылку.
     """
     await state.finish() 
     args = message.get_args() 
@@ -89,6 +97,7 @@ async def handle_start(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
         token = get_or_create_user_token(user_id)
         
+        # Генерация ссылки с именем вашего бота
         link = f"https://t.me/{BOT_USERNAME}?start={token}"
         
         await message.reply(
@@ -156,6 +165,7 @@ async def handle_anon_message(message: types.Message, state: FSMContext):
 
 if __name__ == '__main__':
     logging.info("Starting bot...")
+    # Инициализация первой записи для администратора
     get_or_create_user_token(YOUR_TELEGRAM_ID) 
     
     executor.start_polling(dp, skip_updates=True)
