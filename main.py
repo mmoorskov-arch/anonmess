@@ -2,6 +2,7 @@ import os
 import logging
 import uuid
 import sqlite_utils
+from sqlite_utils.db import NotFoundError
 
 # Импорт executor работает корректно с aiogram==2.25.1
 from aiogram import Bot, Dispatcher, types, executor
@@ -9,18 +10,12 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# --- КОНФИГУРАЦИЯ БОТА (ЖЕСТКО ПРОПИСАННЫЕ ДАННЫЕ) ---
-# Токен (8597302676:AAH6sOqnLONNdboRPwfYhmzk_fkL4sFRDo0)
+# --- КОНФИГУРАЦИЯ БОТА ---
 API_TOKEN = '8597302676:AAH6sOqnLONNdboRPwfYhmzk_fkL4sFRDo0' 
-
-# Ваш Telegram ID (7227557185)
 YOUR_TELEGRAM_ID = 7227557185 
-
-# Имя вашего бота для генерации ссылки
 BOT_USERNAME = 'MTGASKBot' 
 # -------------------------
 
-# Проверка, что критические данные присутствуют
 if not API_TOKEN or YOUR_TELEGRAM_ID is None:
     logging.error("❌ Критическая ошибка: Отсутствует BOT_TOKEN или YOUR_ID.")
     exit(1)
@@ -29,18 +24,21 @@ if not API_TOKEN or YOUR_TELEGRAM_ID is None:
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-# MemoryStorage подходит для Bot-Host
 dp = Dispatcher(bot, storage=MemoryStorage()) 
 DB_NAME = 'anon_bot.db'
 db = sqlite_utils.Database(DB_NAME)
 
-# Инициализация таблицы для пользователей и их токенов
-if 'users' not in db.table_names():
-    db["users"].create(
-        {"id": int, "link_token": str},
-        pk="id",
-        if_not_exists=True
-    )
+# --- Инициализация таблицы БД ---
+# Мы поместим создание таблицы в отдельную функцию, чтобы быть уверенными, 
+# что она выполнится перед использованием БД.
+def initialize_db():
+    if 'users' not in db.table_names():
+        logging.info("Создание таблицы 'users'...")
+        db["users"].create(
+            {"id": int, "link_token": str},
+            pk="id",
+            if_not_exists=True
+        )
 
 # --- FSM (Конечный автомат) для отслеживания состояния отправки ---
 class AnonMessage(StatesGroup):
@@ -50,14 +48,29 @@ class AnonMessage(StatesGroup):
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_or_create_user_token(user_id: int) -> str:
-    """Получает токен пользователя из БД или создает новый."""
-    user_data = db["users"].get(user_id)
+    """Получает токен пользователя из БД или создает новый, используя try/except."""
+    
+    # 1. Попытка получить данные
+    user_data = None
+    try:
+        user_data = db["users"].get(user_id)
+    except NotFoundError:
+        # Это нормально, если пользователь не найден, мы его создадим
+        pass
+    except Exception as e:
+        # Перехват других возможных ошибок БД, на всякий случай
+        logging.error(f"Ошибка при получении данных пользователя {user_id}: {e}")
+        pass
+        
+    # 2. Если данные найдены, возвращаем токен
     if user_data:
         return user_data["link_token"]
-    else:
-        new_token = str(uuid.uuid4())[:8] 
-        db["users"].insert({"id": user_id, "link_token": new_token}, alter=True)
-        return new_token
+    
+    # 3. Если не найдены (или возникла NotFoundError), создаем нового
+    new_token = str(uuid.uuid4())[:8] 
+    db["users"].insert({"id": user_id, "link_token": new_token}, alter=True)
+    return new_token
+
 
 def get_user_id_by_token(token: str) -> int or None:
     """Находит Telegram ID по уникальному токену."""
@@ -74,6 +87,9 @@ async def handle_start(message: types.Message, state: FSMContext):
     """
     await state.finish() 
     args = message.get_args() 
+    
+    # Сначала убедимся, что таблица существует для нового пользователя
+    initialize_db() 
     
     if args:
         # Сценарий 1: Переход по ссылке (начинаем анонимную отправку)
@@ -165,7 +181,12 @@ async def handle_anon_message(message: types.Message, state: FSMContext):
 
 if __name__ == '__main__':
     logging.info("Starting bot...")
-    # Инициализация первой записи для администратора
+    
+    # 1. Инициализация таблицы БД перед началом работы executor
+    initialize_db()
+    
+    # 2. Инициализация первой записи для администратора
+    # Теперь эта функция более устойчива к ошибкам NotFoundError
     get_or_create_user_token(YOUR_TELEGRAM_ID) 
     
     executor.start_polling(dp, skip_updates=True)
